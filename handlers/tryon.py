@@ -2,19 +2,22 @@ import asyncio
 import json
 import io
 import logging
+from datetime import datetime
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from database import models
 from keyboards.inline import (tryon_result_kb, outfit_add_or_start_kb,
                                season_kb, retry_tryon_kb, back_to_menu_kb,
-                               sizes_skip_kb)
+                               sizes_skip_kb, item_source_kb)
 from services import polza_client, PolzaAPIError, enqueue, TooManyJobsError
 from services.billing import get_tryon_cost, can_afford
-from config import TARIFFS
+from config import TARIFFS, WARDROBE_LIMIT
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -56,6 +59,19 @@ def _get_quality(tariff: str) -> str:
     return TARIFFS.get(tariff, {}).get("quality", "medium")
 
 
+def _user_has_wardrobe_access(user) -> bool:
+    if WARDROBE_LIMIT.get(user["tariff"], 0) > 0:
+        return True
+    pack_until = user["wardrobe_until"] if "wardrobe_until" in user.keys() else None
+    if pack_until:
+        try:
+            if datetime.fromisoformat(pack_until) > datetime.now():
+                return True
+        except Exception:
+            pass
+    return False
+
+
 # ─── Single tryon ─────────────────────────────────────────────────────────
 
 @router.message(Command("tryon"))
@@ -92,9 +108,17 @@ async def got_user_photo_single(message: Message, state: FSMContext, bot: Bot):
         await message.answer(SIZES_PROMPT, parse_mode="HTML", reply_markup=sizes_skip_kb())
         return
 
+    user = await _ensure_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
     await state.update_data(user_photo_file_id=photo.file_id)
     await state.set_state(TryonStates.waiting_item_photo)
-    await message.answer("👗 Теперь отправь фото вещи, которую хочешь примерить")
+
+    if _user_has_wardrobe_access(user):
+        await message.answer(
+            "👗 Отправь фото вещи или выбери из шкафа:",
+            reply_markup=item_source_kb()
+        )
+    else:
+        await message.answer("👗 Теперь отправь фото вещи, которую хочешь примерить")
 
 
 @router.message(TryonStates.waiting_item_photo, F.photo)
@@ -107,6 +131,52 @@ async def got_item_photo_single(message: Message, state: FSMContext, bot: Bot):
     await state.update_data(item_photos=[photo.file_id], flow_type="single")
     await state.set_state(TryonStates.waiting_sizes)
     await message.answer(SIZES_PROMPT, parse_mode="HTML", reply_markup=sizes_skip_kb())
+
+
+@router.callback_query(TryonStates.waiting_item_photo, F.data == "tryon_from_wardrobe")
+async def tryon_pick_from_wardrobe(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    items, total = await models.get_wardrobe_items(user_id, limit=50)
+    if not items:
+        await callback.answer("Шкаф пуст — сначала добавь вещи в /wardrobe.", show_alert=True)
+        return
+
+    builder = InlineKeyboardBuilder()
+    for item in items:
+        builder.row(InlineKeyboardButton(
+            text=f"👗 {item['name']}",
+            callback_data=f"tryon_wp:{item['id']}"
+        ))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="tryon_wp_back"))
+    await callback.answer()
+    await callback.message.answer("Выбери вещь из шкафа:", reply_markup=builder.as_markup())
+
+
+@router.callback_query(TryonStates.waiting_item_photo, F.data == "tryon_wp_back")
+async def tryon_wp_back(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer(
+        "👗 Отправь фото вещи или выбери из шкафа:",
+        reply_markup=item_source_kb()
+    )
+
+
+@router.callback_query(TryonStates.waiting_item_photo, F.data.startswith("tryon_wp:"))
+async def tryon_wardrobe_pick(callback: CallbackQuery, state: FSMContext):
+    item_id = int(callback.data.split(":")[1])
+    item = await models.get_wardrobe_item(item_id)
+    if not item:
+        await callback.answer("Вещь не найдена", show_alert=True)
+        return
+
+    await state.update_data(item_photos=[item["file_id"]], flow_type="single")
+    await state.set_state(TryonStates.waiting_sizes)
+    await callback.answer()
+    await callback.message.answer(
+        f"✅ Выбрана: <b>{item['name']}</b>\n\n{SIZES_PROMPT}",
+        parse_mode="HTML",
+        reply_markup=sizes_skip_kb()
+    )
 
 
 # ─── Sizes step (shared between single & outfit) ──────────────────────────

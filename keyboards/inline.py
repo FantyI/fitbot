@@ -278,3 +278,10 @@ def sizes_skip_kb() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="⏭ Пропустить", callback_data="tryon_skip_sizes"))
     builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="menu"))
     return builder.as_markup()
+
+
+def item_source_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="👜 Выбрать из шкафа", callback_data="tryon_from_wardrobe"))
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="menu"))
+    return builder.as_markup()
