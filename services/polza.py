@@ -167,18 +167,30 @@ async def tryon(user_photo_bytes: bytes, item_photos_bytes: list,
     if n == 1:
         prompt = (
             "Virtual clothing try-on. "
-            "First image: a person. Second image: a clothing item. "
-            f"Generate a realistic photo of this person wearing that clothing item.{season_text}{sizes_text} "
-            "Preserve the person's face, body shape and proportions exactly. "
-            "The clothing should look naturally worn. Output the result image only."
+            "Image 1: a person (disregard what they are currently wearing). "
+            "Image 2: a target clothing item to try on. "
+            "Task: generate a realistic photo of the person from Image 1 wearing the clothing item from Image 2. "
+            "Critical rules: "
+            "1. Completely remove and replace all existing clothing on the person — do NOT blend or mix old and new garments. "
+            "2. The sleeve style, width, and length must exactly match the item in Image 2, regardless of what sleeves the person originally had. "
+            "3. Reproduce the exact cut, silhouette, collar, hem, and fabric texture from Image 2. "
+            "4. Preserve the person's face, skin tone, hair, body shape and proportions exactly. "
+            f"5. The new garment should look naturally worn and fit the person's body.{season_text}{sizes_text} "
+            "Output the result image only."
         )
     else:
         prompt = (
             "Virtual clothing try-on. "
-            f"First image: a person. Next {n} images: clothing items for an outfit. "
-            f"Generate a realistic photo of this person wearing all these clothing items together.{season_text}{sizes_text} "
-            "Preserve the person's face, body shape and proportions exactly. "
-            "All clothing should look naturally worn together. Output the result image only."
+            "Image 1: a person (disregard what they are currently wearing). "
+            f"Images 2–{n+1}: clothing items to try on together as an outfit. "
+            "Task: generate a realistic photo of the person from Image 1 wearing all clothing items from Images 2 onwards. "
+            "Critical rules: "
+            "1. Completely remove and replace all existing clothing on the person — do NOT blend or mix old and new garments. "
+            "2. For each item, reproduce its exact sleeve style, width, length, cut, silhouette, collar, hem and fabric texture. "
+            "3. All items should fit together naturally as a coherent outfit. "
+            "4. Preserve the person's face, skin tone, hair, body shape and proportions exactly. "
+            f"5. Every garment should look naturally worn on the person's body.{season_text}{sizes_text} "
+            "Output the result image only."
         )
 
     all_images = [user_photo_bytes] + list(item_photos_bytes)
