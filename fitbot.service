@@ -1,0 +1,17 @@
+[Unit]
+Description=FitBot Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/fitbot
+ExecStart=/root/fitbot/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/root/fitbot/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
