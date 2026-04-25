@@ -217,6 +217,14 @@ async def tryon(user_photo_bytes: bytes, item_photos_bytes: list,
     }
 
     data, raw = await _media(payload)
+
+    if data.get("status") == "failed":
+        err = data.get("error", {})
+        code = err.get("code", "")
+        if code == "FORBIDDEN":
+            raise PolzaAPIError("Фото заблокировано фильтрами безопасности. Попробуй другое фото.")
+        raise PolzaAPIError(f"Генерация не удалась: {err.get('message', 'неизвестная ошибка')}")
+
     image_bytes = await _extract_image_from_media(data, raw)
 
     if not image_bytes:

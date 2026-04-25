@@ -384,7 +384,10 @@ async def _await_result(bot: Bot, chat_id: int, progress_msg_id: int,
         logger.error(f"Generation failed for session {session_id}: {type(e).__name__}: {e}", exc_info=True)
         await _refund(user_id, cost, deducted_from)
         await models.update_session(session_id, status="failed")
-        error_text = f"❌ Ошибка генерации: {type(e).__name__}: {e}\n\nПримерка не списана."
+        if isinstance(e, PolzaAPIError):
+            error_text = f"❌ {e}\n\nПримерка не списана."
+        else:
+            error_text = f"❌ Ошибка генерации. Попробуй снова.\n\nПримерка не списана."
         try:
             await bot.edit_message_text(
                 error_text,
