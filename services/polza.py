@@ -68,6 +68,52 @@ async def _chat(payload: dict) -> dict:
     return data
 
 
+async def _describe_garment(item_bytes: bytes) -> str:
+    """Analyse a garment image with GPT-4o and return a precise detail description."""
+    b64_img = _b64(item_bytes)
+    payload = {
+        "model": GPT4O,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "You are a garment analyst for a virtual try-on system. "
+                            "Describe every visible detail of this clothing item so precisely that another AI can reproduce it exactly. "
+                            "Structure your answer as a flat list of facts, one per line. Cover:\n"
+                            "- Overall silhouette and fit (e.g. oversized boxy, slim fitted, relaxed straight)\n"
+                            "- Base colour(s): exact shade names for each zone (body, sleeves, collar, panels)\n"
+                            "- Logo / graphic / text / embroidery: exact shape, dimensions relative to garment (e.g. '~8 cm wide'), "
+                            "position (e.g. 'centred on left chest, 5 cm below collar'), colours, font weight\n"
+                            "- Seams: location (shoulder, side, hem, cuffs), stitch type (single/double topstitch), thread colour\n"
+                            "- Neckline and collar: exact type (crew-neck, V-neck, button-down, mandarin, hood, etc.) and shape\n"
+                            "- Sleeves: exact length category, width, taper, cuff style and any cuff details\n"
+                            "- Closures: type (buttons/zip/snap/tie), count, colour, size, exact positions\n"
+                            "- Hem: length (crop/waist/hip/thigh/midi/maxi), shape (straight/curved/asymmetric/split), finishing\n"
+                            "- Fabric appearance: texture, sheen, weight impression (e.g. heavy denim, lightweight linen, ribbed knit)\n"
+                            "- Any labels, patches, pockets, hardware, reflective details or unique features\n"
+                            "Be exhaustive. Do not skip any visible detail."
+                        ),
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 700,
+    }
+    try:
+        result = await _chat(payload)
+        return result["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        logger.warning(f"Garment description failed: {e}")
+        return ""
+
+
 async def _media(payload: dict) -> tuple[dict, str]:
     """Запрос к /media."""
     url = f"{POLZA_BASE_URL}/media"
@@ -164,27 +210,48 @@ async def tryon(user_photo_bytes: bytes, item_photos_bytes: list,
     ) if sizes else ""
     n = len(item_photos_bytes)
 
+    # Pre-analyse garment(s) with GPT-4o to get a precise text description.
+    # This gives Gemini a second channel (text + image) for fine details like
+    # logo position, seam type and colour zones that it otherwise hallucinate.
     if n == 1:
+        garment_descs = [await _describe_garment(item_photos_bytes[0])]
+    else:
+        garment_descs = list(await asyncio.gather(
+            *[_describe_garment(b) for b in item_photos_bytes]
+        ))
+
+    def _garment_block(desc: str, label: str) -> str:
+        if not desc:
+            return ""
+        return (
+            f"PRE-ANALYSIS OF {label} (use as a mandatory detail checklist — "
+            f"every item listed here must appear in the result exactly as described): "
+            f"{desc} "
+        )
+
+    if n == 1:
+        garment_detail = _garment_block(garment_descs[0], "THE GARMENT (Image 2)")
         prompt = (
             "Virtual try-on for a fashion retailer product page. "
             "Image 1 = the model. Image 2 = the product (garment to be worn). "
             "TASK: produce one photorealistic image of the model from Image 1 wearing the exact product from Image 2, "
             "as if this were an official product-on-model photo for an e-commerce listing. "
-            "The viewer must be able to recognise Image 2 as the same garment in the result — "
-            "if they place Image 2 and the result side by side, every detail must match. "
+            "The viewer must be able to place Image 2 and the result side by side and confirm every detail matches. "
             ""
-            "GARMENT — treat Image 2 as a pixel-accurate texture reference, NOT as inspiration. "
+            f"{garment_detail}"
+            ""
+            "GARMENT RENDERING — treat Image 2 as a pixel-accurate texture reference, NOT as inspiration. "
             "Reproduce with zero artistic deviation: "
             "COLOUR: match every colour zone exactly — hue, saturation and brightness must not shift by any amount. "
-            "SEAMS & CONSTRUCTION: reproduce all visible seams, topstitching, overlock edges, darts and construction lines. "
+            "SEAMS & CONSTRUCTION: reproduce all visible seams, topstitching, overlock edges, darts and construction lines exactly as seen in Image 2. "
             "CLOSURES: every button (shape, colour, size, count, exact position), zip (type, length, pull hardware), snap or tie — replicate precisely. "
-            "PRINT / GRAPHIC / LOGO / TEXT / EMBROIDERY: reproduce scale, colour, position and orientation exactly; do not redraw, stylise or simplify. "
+            "PRINT / GRAPHIC / LOGO / TEXT / EMBROIDERY: reproduce size, colour, position and orientation exactly as in Image 2 — do not redraw, rescale, reposition, stylise or simplify. "
             "FABRIC: match the surface appearance — matte/shiny, rough/smooth, knit structure, weave pattern, drape weight. "
-            "SILHOUETTE & FIT: oversized / boxy / relaxed / regular / slim / tailored — replicate exactly; do not normalise to a generic fit. "
-            "SLEEVES: match length (sleeveless/cap/short/elbow/3-quarter/long), width, taper and cuff style exactly. "
-            "If Image 2 is a flat-lay or hanger shot, reconstruct the natural worn sleeve shape from the cuff area and garment proportions — do not borrow sleeve shape from any other source. "
-            "NECKLINE & COLLAR: exact shape, height, lapel type or collar style. "
-            "HEM: exact length (crop/waist/hip/thigh/knee/midi/maxi) and shape (straight/curved/asymmetric/split). "
+            "SILHOUETTE & FIT: oversized / boxy / relaxed / regular / slim / tailored — replicate exactly; do not normalise. "
+            "SLEEVES: match length, width, taper and cuff style exactly from Image 2. "
+            "If Image 2 is a flat-lay or hanger shot, reconstruct the natural worn sleeve shape from the cuff area and garment proportions. "
+            "NECKLINE & COLLAR: exact shape, height, lapel type or collar style from Image 2. "
+            "HEM: exact length and shape from Image 2. "
             "LABELS, PATCHES, HARDWARE: any visible labels, tags, patches or metal hardware must appear in the result. "
             ""
             "MODEL — preserve from Image 1 without any change: "
@@ -192,42 +259,47 @@ async def tryon(user_photo_bytes: bytes, item_photos_bytes: list,
             ""
             "ABSOLUTE CONSTRAINTS: "
             "1. The outfit in the final image consists solely of the product from Image 2. No other garments are visible. "
-            "2. Do not invent, stylise, average or hallucinate any garment detail — Image 2 is the only authority. "
+            "2. Do not invent, stylise, average or hallucinate any garment detail — Image 2 and the pre-analysis above are the only authorities. "
             "3. Do not alter the model's body shape — the garment adapts to the model, not vice versa. "
             f"4. Result must be photorealistic and suitable for an e-commerce product page.{season_text}{sizes_text} "
             "Output: one image."
         )
     else:
+        garment_details = "".join(
+            _garment_block(desc, f"GARMENT {i+1} (Image {i+2})")
+            for i, desc in enumerate(garment_descs)
+        )
         prompt = (
             "Virtual try-on for a fashion retailer product page. "
             "Image 1 = the model. "
             f"Images 2 to {n+1} = the products (garments that together form the complete outfit). "
             "TASK: produce one photorealistic image of the model from Image 1 wearing all products from Images 2 onwards, "
             "as if this were an official product-on-model photo for an e-commerce listing. "
-            "The viewer must be able to recognise each source garment image in the result — "
-            "if they place each garment image beside the result, every detail must match. "
+            "The viewer must be able to place each garment image beside the result and confirm every detail matches. "
             ""
-            "EACH GARMENT — treat its source image as a pixel-accurate texture reference, NOT as inspiration. "
+            f"{garment_details}"
+            ""
+            "EACH GARMENT RENDERING — treat each source image as a pixel-accurate texture reference, NOT as inspiration. "
             "For every garment reproduce with zero artistic deviation: "
             "COLOUR: exact hue, saturation and brightness — no shift. "
             "SEAMS & CONSTRUCTION: all visible seams, topstitching, overlock edges, darts and construction lines. "
-            "CLOSURES: every button, zip, snap or tie — shape, colour, size, count and position replicated precisely. "
-            "PRINT / GRAPHIC / LOGO / TEXT / EMBROIDERY: scale, colour, position and orientation exact; do not redraw or stylise. "
+            "CLOSURES: every button, zip, snap or tie — shape, colour, size, count and exact position. "
+            "PRINT / GRAPHIC / LOGO / TEXT / EMBROIDERY: size, colour, position and orientation exact — do not redraw, rescale or reposition. "
             "FABRIC: surface appearance, drape weight, sheen and texture. "
             "SILHOUETTE & FIT: exact — do not normalise. "
-            "SLEEVES: exact length, width, taper and cuff style. If source is a flat-lay or hanger, infer worn sleeve shape from cuff area. "
-            "NECKLINE & COLLAR: exact. "
-            "HEM: exact length and shape. "
+            "SLEEVES: exact length, width, taper and cuff style per garment image. "
+            "NECKLINE & COLLAR: exact per garment image. "
+            "HEM: exact length and shape per garment image. "
             "LABELS, PATCHES, HARDWARE: replicate any visible details. "
             ""
-            "LAYERING: assemble into a coherent outfit respecting natural layering order (e.g. shirt under jacket, trousers under skirt hem). "
+            "LAYERING: assemble into a coherent outfit respecting natural layering order (e.g. shirt under jacket). "
             ""
             "MODEL — preserve from Image 1 without any change: "
             "face, expression, skin tone, hair, body proportions, natural pose, background and lighting. "
             ""
             "ABSOLUTE CONSTRAINTS: "
             "1. The outfit consists solely of the products from the garment images. No other garments are visible. "
-            "2. Do not invent, stylise, average or hallucinate any garment detail — each source image is the only authority for that garment. "
+            "2. Do not invent, stylise, average or hallucinate any garment detail — each source image and its pre-analysis are the only authority. "
             "3. Do not alter the model's body shape — each garment adapts to the model, not vice versa. "
             f"4. Result must be photorealistic and suitable for an e-commerce product page.{season_text}{sizes_text} "
             "Output: one image."
