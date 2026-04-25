@@ -220,7 +220,11 @@ async def tryon(user_photo_bytes: bytes, item_photos_bytes: list,
     image_bytes = await _extract_image_from_media(data, raw)
 
     if not image_bytes:
-        raise PolzaAPIError("Не удалось получить изображение от Нано Банано.")
+        raise PolzaAPIError(
+            f"Не удалось получить изображение от Нано Банано.\n"
+            f"data keys: {list(data.keys())}\n"
+            f"raw (500): {raw[:500]}"
+        )
 
     return image_bytes
 
