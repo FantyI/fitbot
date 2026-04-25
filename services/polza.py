@@ -286,10 +286,10 @@ async def tryon(user_photo_bytes: bytes, item_photos_bytes: list,
             "Image 2 = the garment reference (may be a flat-lay, hanger, mannequin, or a different person wearing it — extract ONLY the garment design, ignore everything else in Image 2). "
             "TASK: generate a NEW photorealistic image of the person from Image 1 wearing the garment from Image 2, "
             "as if photographed in a single real shot with the person already dressed in it. "
-            "CRITICAL OUTPUT RULES: "
-            "(A) The person in the result MUST be the person from Image 1. "
-            "(B) The person in Image 1 is currently wearing their OWN clothes. You MUST replace those clothes with the garment from Image 2. The clothing visible in the result MUST differ from the clothing in Image 1. Returning Image 1 unchanged or nearly unchanged is incorrect. "
-            "(C) Do NOT return Image 1 unmodified. Do NOT return Image 2 or any modification of it. The result must show a visible clothing change. "
+            "OUTPUT REQUIREMENT: generate a brand-new image that has never existed before. "
+            "The person from Image 1 is currently dressed in their own clothes — your task is to show that same person wearing the garment from Image 2 instead. "
+            "The result must show a visible clothing change: the garment in the output comes from Image 2, not from Image 1. "
+            "The person's face, body and pose come from Image 1. The garment design comes from Image 2. Nothing else. "
             ""
             "DO NOT CHANGE — these three elements must be preserved exactly, with zero modification: "
             "1. FACE: the model's face must be identical to Image 1 — same features, same expression, same skin tone. Do not alter, relight, smooth, regenerate or stylise the face in any way. "
@@ -359,7 +359,8 @@ async def tryon(user_photo_bytes: bytes, item_photos_bytes: list,
             "CRITICAL OUTPUT RULES: "
             "(A) The person in the result MUST be the person from Image 1. "
             "(B) The person in Image 1 is currently wearing their OWN clothes. You MUST replace those clothes with the garments from Images 2 onwards. The clothing visible in the result MUST differ from the clothing in Image 1. Returning Image 1 unchanged or nearly unchanged is incorrect. "
-            "(C) Do NOT return Image 1 unmodified. Do NOT return any of the garment images or their modifications. The result must show a visible clothing change. "
+            "The result must show a visible clothing change: the outfit in the output comes from the garment images, not from Image 1. "
+            "The person's face, body and pose come from Image 1. The garment designs come from Images 2 onwards. Nothing else. "
             ""
             "DO NOT CHANGE — these elements must be preserved exactly, with zero modification: "
             "1. FACE: the model's face must be identical to Image 1 — same features, same expression, same skin tone. Do not alter, relight, smooth, regenerate or stylise the face in any way. "
@@ -425,25 +426,37 @@ async def tryon(user_photo_bytes: bytes, item_photos_bytes: list,
         },
     }
 
-    data, raw = await _media(payload)
+    input_set = {user_photo_bytes} | set(item_photos_bytes)
 
-    if data.get("status") == "failed":
-        err = data.get("error", {})
-        code = err.get("code", "")
-        if code == "FORBIDDEN":
-            raise PolzaAPIError("Фото заблокировано фильтрами безопасности. Попробуй другое фото.")
-        raise PolzaAPIError(f"Генерация не удалась: {err.get('message', 'неизвестная ошибка')}")
+    for attempt in range(2):
+        data, raw = await _media(payload)
 
-    image_bytes = await _extract_image_from_media(data, raw)
+        if data.get("status") == "failed":
+            err = data.get("error", {})
+            code = err.get("code", "")
+            if code == "FORBIDDEN":
+                raise PolzaAPIError("Фото заблокировано фильтрами безопасности. Попробуй другое фото.")
+            raise PolzaAPIError(f"Генерация не удалась: {err.get('message', 'неизвестная ошибка')}")
 
-    if not image_bytes:
-        raise PolzaAPIError(
-            f"Не удалось получить изображение от Нано Банано.\n"
-            f"data keys: {list(data.keys())}\n"
-            f"raw (500): {raw[:500]}"
-        )
+        image_bytes = await _extract_image_from_media(data, raw)
 
-    return image_bytes
+        if not image_bytes:
+            raise PolzaAPIError(
+                f"Не удалось получить изображение от Нано Банано.\n"
+                f"data keys: {list(data.keys())}\n"
+                f"raw (500): {raw[:500]}"
+            )
+
+        # Detect passthrough: model returned one of the input images unchanged
+        if image_bytes in input_set:
+            if attempt == 0:
+                logger.warning("Passthrough detected (result == input image), retrying...")
+                continue
+            raise PolzaAPIError("Модель вернула исходное изображение без изменений. Попробуй другое фото.")
+
+        return image_bytes
+
+    raise PolzaAPIError("Не удалось получить результат после повторной попытки.")
 
 
 async def style_advice(outfit_description: str) -> str:
