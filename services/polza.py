@@ -413,25 +413,36 @@ async def tryon(user_photo_bytes: bytes, item_photos_bytes: list,
         },
     }
 
-    data, raw = await _media(payload)
+    input_set = {user_photo_bytes} | set(item_photos_bytes)
 
-    if data.get("status") == "failed":
-        err = data.get("error", {})
-        code = err.get("code", "")
-        if code == "FORBIDDEN":
-            raise PolzaAPIError("Фото заблокировано фильтрами безопасности. Попробуй другое фото.")
-        raise PolzaAPIError(f"Генерация не удалась: {err.get('message', 'неизвестная ошибка')}")
+    for attempt in range(2):
+        data, raw = await _media(payload)
 
-    image_bytes = await _extract_image_from_media(data, raw)
+        if data.get("status") == "failed":
+            err = data.get("error", {})
+            code = err.get("code", "")
+            if code == "FORBIDDEN":
+                raise PolzaAPIError("Фото заблокировано фильтрами безопасности. Попробуй другое фото.")
+            raise PolzaAPIError(f"Генерация не удалась: {err.get('message', 'неизвестная ошибка')}")
 
-    if not image_bytes:
-        raise PolzaAPIError(
-            f"Не удалось получить изображение от Нано Банано.\n"
-            f"data keys: {list(data.keys())}\n"
-            f"raw (500): {raw[:500]}"
-        )
+        image_bytes = await _extract_image_from_media(data, raw)
 
-    return image_bytes
+        if not image_bytes:
+            raise PolzaAPIError(
+                f"Не удалось получить изображение от Нано Банано.\n"
+                f"data keys: {list(data.keys())}\n"
+                f"raw (500): {raw[:500]}"
+            )
+
+        if image_bytes in input_set:
+            if attempt == 0:
+                logger.warning("Passthrough detected, retrying...")
+                continue
+            raise PolzaAPIError("Модель вернула исходное изображение без изменений. Попробуй снова.")
+
+        return image_bytes
+
+    raise PolzaAPIError("Не удалось получить результат после повторной попытки.")
 
 
 async def style_advice(outfit_description: str) -> str:
